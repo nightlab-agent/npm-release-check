@@ -246,3 +246,39 @@ test("a placeholder token passes; a .pem with only a public key passes, one with
   const priv = check(pkgDir("privpem", { ...good, files: ["index.js", "k.pem"] }, { "index.js": "1\n", "k.pem": "-----BEGIN " + "PRIVATE KEY-----\nabc\n" }));
   assert.ok(ids(priv, "FAIL").includes("private-file"));
 });
+
+test("key data after a PEM header is found in YAML, a template, an array of lines and an encrypted PEM; reported once", () => {
+  const head = "-----BEGIN " + "RSA PRIVATE KEY-----";
+  const body = mix(64, 1);
+  const cases = {
+    "k.yml": `key: |\n  ${head}\n  ${body}\n`,
+    "t.js": `const k = \`\n    ${head}\n    ${body}\n\`;\n`,
+    "a.js": `const k = ['${head}', '${body}'].join("\\n");\n`,
+    "e.txt": `${head}\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,${mix(32)}\n\n${body}\n`,
+  };
+  for (const [file, text] of Object.entries(cases)) {
+    const r = check(pkgDir("pem-" + file.replace(/\W/g, ""), { ...good, files: ["index.js", file] }, { "index.js": "1\n", [file]: text }));
+    assert.equal(r.results.filter((x) => x.id === "secret").length, 1, file);
+  }
+  const next = check(pkgDir("pem-next", good, { "index.js": `// ${head}\nconst t = "${"npm_" + mix(36)}";\n` }));
+  assert.deepEqual(next.results.filter((x) => x.id === "secret").map((x) => x.message.split(":")[1]), ["2"]);
+});
+
+test("an AWS or Google key after an escaped newline fails", () => {
+  const aws = check(pkgDir("awsesc", good, { "index.js": `const csv = "AccessKeyId\\n${"AKIA" + "Q7RZ2M4XJ9KPW3TB"}";\n` }));
+  assert.ok(ids(aws, "FAIL").includes("secret"));
+  const goo = check(pkgDir("gooesc", good, { "index.js": `const k = "k:\\n${"AIza" + mix(35)}";\n` }));
+  assert.ok(ids(goo, "FAIL").includes("secret"));
+});
+
+test("exports arrays and node-addons are not custom conditions; a public .pem in a key folder or a DER .pem fails", () => {
+  const arr = check(pkgDir("exparr", { ...good, exports: { ".": [{ import: "./dist/x.mjs" }, "./dist/x.cjs"] } }, { "index.js": "1\n" }));
+  assert.ok(ids(arr, "FAIL").includes("entry"));
+  const addon = check(pkgDir("expaddon", { ...good, exports: { "node-addons": "./build/a.node", default: "./index.js" } }, { "index.js": "1\n" }));
+  assert.ok(ids(addon, "FAIL").includes("entry"));
+  const folder = "." + "ssh";
+  const inFolder = check(pkgDir("folderpem", { ...good, files: ["index.js", folder] }, { "index.js": "1\n", [`${folder}/k.pem`]: "-----BEGIN PUBLIC KEY-----\nabc\n" }));
+  assert.ok(ids(inFolder, "FAIL").includes("private-file"));
+  const der = check(pkgDir("derpem", { ...good, files: ["index.js", "k.pem"] }, { "index.js": "1\n", "k.pem": "\u0030\u0082\u0004binary" }));
+  assert.ok(ids(der, "FAIL").includes("private-file"));
+});

@@ -29,14 +29,13 @@ const SECRET_PATTERNS = [
   [/npm_[A-Za-z0-9]{36}/, "npm token"],
   [/gh[pousr]_[A-Za-z0-9]{36}/, "GitHub token"],
   [/github_pat_[A-Za-z0-9_]{60,}/, "GitHub fine-grained token"],
-  // Not inside a longer base64 run, and not AWS's documented example key (…EXAMPLE).
-  [/(?<![A-Za-z0-9+/])AKIA(?![0-9A-Z]{9}EXAMPLE)[0-9A-Z]{16}(?![A-Za-z0-9+/])/, "AWS access key id"],
-  // The header alone is code that writes a PEM; key data must follow it (a newline, real or escaped, then base64).
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\r?\n|(?:\\r)?\\n)[A-Za-z0-9+/]{40}/, "private key block"],
+  // Not touching a base64 character on either side (an escape such as \n before it does not count), and not a
+  // key ending in EXAMPLE, as AWS's documented example key does.
+  [/(?<!(?<!\\)[A-Za-z0-9+/])AKIA(?![0-9A-Z]{9}EXAMPLE)[0-9A-Z]{16}(?![A-Za-z0-9+/])/, "AWS access key id"],
   [/sk-ant-[A-Za-z0-9_-]{20,}/, "Anthropic API key"],
   [/sk-(proj-)?[A-Za-z0-9]{32,}/, "OpenAI-style API key"],
   [/xox[abprs]-[A-Za-z0-9-]{10,}/, "Slack token"],
-  [/(?<![A-Za-z0-9+/])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])/, "Google API key"],
+  [/(?<!(?<!\\)[A-Za-z0-9+/])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])/, "Google API key"],
 ];
 
 const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"];
@@ -45,6 +44,7 @@ const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"];
 function redact(text) {
   let out = String(text).replace(/\/\/[^/@\s:]+:[^/@\s]+@/g, "//[hidden]@");
   for (const [rx] of SECRET_PATTERNS) out = out.replace(new RegExp(rx.source, "g"), "[hidden]");
+  out = out.replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*/g, "[hidden]");
   return out;
 }
 const BIG_FILE = 50 * 1024 * 1024;
@@ -52,21 +52,24 @@ const BIG_FILE = 50 * 1024 * 1024;
 // exports conditions Node, bundlers and runtimes read without being asked. Any other key (source, code,
 // dev-source) is a custom condition only a tool that sets it reads, so a missing file there is INFO.
 const KNOWN_CONDITIONS = new Set(["node", "import", "require", "default", "types", "module-sync", "browser", "module",
-  "deno", "bun", "worker", "workerd", "edge-light", "react-native", "react-server", "development", "production", "electron"]);
+  "deno", "bun", "worker", "workerd", "edge-light", "react-native", "react-server", "development", "production", "electron",
+  "node-addons", "style", "sass", "svelte"]);
 
 // npm 10 runs a package's prepare script during `npm pack --dry-run` even with --ignore-scripts.
 // Handing npm a shell that does nothing stops it. Windows has no such shell; there the check refuses to pack.
 function noopShell() {
   if (process.platform === "win32") return "";
-  return ["/usr/bin/true", "/bin/true"].find((p) => existsSync(p)) || "";
+  const dirs = ["/usr/bin", "/bin", ...(process.env.PATH || "").split(":").filter(Boolean)];
+  return dirs.map((d) => join(d, "true")).find((p) => existsSync(p)) || "";
 }
 const BIG_PACKAGE = 10 * 1024 * 1024;
 
-// A .pem that holds only a public key or a certificate is meant to ship.
+// A .pem that holds only a public key or a certificate is meant to ship. One that is not PEM text (DER, UTF-16) is not exempt.
 function publicPem(path) {
   if (!/\.pem$/i.test(path)) return false;
   try {
-    return !readFileSync(path, "utf8").includes("PRIVATE KEY");
+    const text = readFileSync(path, "utf8");
+    return text.trimStart().startsWith("-----BEGIN") && !text.includes("PRIVATE KEY");
   } catch {
     return false;
   }
@@ -76,6 +79,20 @@ function publicPem(path) {
 function placeholder(line, rx) {
   const all = line.match(new RegExp(rx.source, "g")) || [];
   return all.length > 0 && all.every((m) => new Set(m.slice(-16)).size <= 3);
+}
+
+// A PEM private key header with key data after it: on the same line after an escaped newline, or on the next
+// lines past indentation, quotes, commas, string joins and an encrypted PEM's Proc-Type/DEK-Info lines.
+// The header alone is code that writes a PEM.
+function pemKeyAt(lines, i) {
+  const m = /-----BEGIN [A-Z ]*PRIVATE KEY-----/.exec(lines[i]);
+  if (!m) return false;
+  const after = [lines[i].slice(m.index + m[0].length), ...lines.slice(i + 1, i + 6)]
+    .filter((l) => !/^\s*["'`]?(Proc-Type|DEK-Info):/.test(l))
+    .join("\n")
+    .replace(/\\r|\\n/g, "")
+    .replace(/[\s"'`,]/g, "");
+  return /^[A-Za-z0-9+/]{40}/.test(after);
 }
 
 function usage() {
@@ -236,7 +253,8 @@ export function check(dirArg, { tsc = true } = {}) {
 
   // 3. private files
   for (const f of files)
-    for (const [rx, what] of PRIVATE_FILES) if (rx.test(f) && !publicPem(join(dir, f))) add("FAIL", "private-file", `${f}: ${what} in the tarball`);
+    for (const [rx, what] of PRIVATE_FILES)
+      if (rx.test(f) && !(what === "key or certificate file" && publicPem(join(dir, f)))) add("FAIL", "private-file", `${f}: ${what} in the tarball`);
 
   // 4. secrets inside packed text files
   for (const f of info.files) {
@@ -252,9 +270,8 @@ export function check(dirArg, { tsc = true } = {}) {
     }
     if (text.includes("\u0000")) continue; // binary
     const lines = text.split("\n");
-    lines.forEach((own, i) => {
-      // A PEM header's key data sits on the next line, so that line is read with it.
-      const line = own.includes("PRIVATE KEY-----") ? `${own}\n${lines[i + 1] ?? ""}` : own;
+    lines.forEach((line, i) => {
+      if (pemKeyAt(lines, i)) add("FAIL", "secret", `${f.path}:${i + 1}: has the shape of: private key block`);
       for (const [rx, what] of SECRET_PATTERNS)
         if (rx.test(line) && !placeholder(line, rx)) add("FAIL", "secret", `${f.path}:${i + 1}: has the shape of: ${what}`);
     });
@@ -270,7 +287,7 @@ export function check(dirArg, { tsc = true } = {}) {
   const entries = entryPoints(pkg);
   for (const [p, field] of entries) {
     const hit = candidates(p, field).some((c) => packed.has(c));
-    const custom = [...field.matchAll(/\[([^\]]*)\]/g)].map((m) => m[1]).find((k) => !k.startsWith(".") && !KNOWN_CONDITIONS.has(k) && !k.startsWith("types@"));
+    const custom = [...field.matchAll(/\[([^\]]*)\]/g)].map((m) => m[1]).find((k) => !k.startsWith(".") && !/^\d+$/.test(k) && !KNOWN_CONDITIONS.has(k) && !k.startsWith("types@"));
     if (hit) continue;
     if (custom) add("INFO", "entry", `${field} points at ${p}, which is not in the tarball; "${custom}" is a custom condition, read only by tools that set it`);
     else add("FAIL", "entry", `${field} points at ${p}, which is not in the tarball`);
