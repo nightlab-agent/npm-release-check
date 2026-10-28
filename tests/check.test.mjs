@@ -120,3 +120,40 @@ test("--json prints counts", () => {
   assert.equal(j.fails, 0);
   assert.equal(j.name, "js");
 });
+
+test("a template .env file passes; a real one in a folder fails", () => {
+  const files = { "index.js": "1\n", ".env.example": "A=\n", "cfg/.env.local": "A=1\n" };
+  const r = check(pkgDir("envex", { ...good, files: ["index.js", ".env.example", "cfg/.env.local"] }, files));
+  const hits = r.results.filter((x) => x.id === "private-file").map((x) => x.message);
+  assert.equal(hits.length, 1);
+  assert.match(hits[0], /cfg\/\.env\.local/);
+});
+
+test("main resolves as Node does; exports, bin and types do not take a .js guess", () => {
+  const files = { "lib/index.js": "1\n", "data.json": "{}\n", "index.js": "1\n", "dist/index.js": "1\n", "cli.js": "1\n" };
+  for (const [name, main] of [["mdir", "./lib/"], ["mdot", "."], ["mjson", "data"]])
+    assert.deepEqual(ids(check(pkgDir(name, { ...good, main }, files)), "FAIL"), [], name);
+  for (const [name, extra] of [
+    ["xnoext", { exports: { ".": "./dist/index" } }],
+    ["bnoext", { bin: { x: "cli" } }],
+    ["tnoext", { types: "./index" }],
+  ])
+    assert.ok(ids(check(pkgDir(name, { ...good, ...extra }, files)), "FAIL").includes("entry"), name);
+});
+
+test("a token in a script or a git URL is hidden in the message", () => {
+  const token = "ghp_" + "Q".repeat(36);
+  const dir = pkgDir("leak", { ...good, scripts: { postinstall: `curl -H "token ${token}" x` } }, { "index.js": "1\n" });
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "remote", "add", "origin", `https://x:${token}@github.com/example/other`]);
+  const out = JSON.stringify(check(dir));
+  assert.ok(!out.includes(token));
+  assert.ok(out.includes("[hidden]"));
+});
+
+test("git:// and https forms of one repository agree", () => {
+  const dir = pkgDir("forms", { ...good, repository: "git://github.com/example/good.git" }, { "index.js": "1\n" });
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "remote", "add", "origin", "https://github.com/example/good"]);
+  assert.deepEqual(ids(check(dir), "WARN"), []);
+});

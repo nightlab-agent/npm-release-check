@@ -14,6 +14,6 @@ Run this before every npm release, and before you tell the user a package is rea
 
 Never print a value the check flags as a secret. Never delete a flagged file without asking: it may be needed and only be in the wrong place (add it to `.npmignore` or drop it from `files`).
 
-What it checks: the files npm would pack (`npm pack --dry-run --json --ignore-scripts`); `.env`, `.npmrc`, keys and git internals in the tarball; token shapes (npm, GitHub, AWS, Anthropic, OpenAI, Slack, Google) in packed text files; `main`, `bin`, `exports` and `types` point at packed files; `preinstall`, `install`, `postinstall`; the `repository` field against git origin; versions in `.claude-plugin/plugin.json`, `gemini-extension.json`, `jsr.json`; CHANGELOG mentions the version; a committed `.npmrc`; `tsc --noEmit` when there is a `tsconfig.json`.
+What it checks: the files npm would pack (`npm pack --dry-run --json --ignore-scripts`); `.env`, `.npmrc`, keys and git internals in the tarball; token shapes (npm, GitHub, AWS, Anthropic, OpenAI, Slack, Google) in packed text files; `main`, `bin`, `exports` and `types` point at packed files; `preinstall`, `install`, `postinstall`; the `repository` field against git origin; versions in `.claude-plugin/plugin.json`, `gemini-extension.json`, `jsr.json`, `deno.json`; CHANGELOG mentions the version; a committed `.npmrc`; `tsc --noEmit` when there is a `tsconfig.json`.
 
 It changes nothing and sends nothing off the machine.

@@ -13,7 +13,7 @@ const VERSION = "0.1.0";
 // Files that should never be in a tarball. Matched against each packed path.
 /** @type {[RegExp, string][]} */
 const PRIVATE_FILES = [
-  [/(^|\/)\.env(\.|$)/i, ".env file"],
+  [/(^|\/)\.env(\.(?!(example|sample|template|dist|defaults)$)[^/]*)?$/i, ".env file"],
   [/(^|\/)\.npmrc$/i, ".npmrc (may hold a registry token)"],
   [/\.(pem|key|p12|pfx|keystore|jks)$/i, "key or certificate file"],
   [/(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/i, "SSH private key"],
@@ -37,6 +37,13 @@ const SECRET_PATTERNS = [
 ];
 
 const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"];
+
+// Text from package.json or git that goes into a message: token shapes and URL user info are hidden.
+function redact(text) {
+  let out = String(text).replace(/\/\/[^/@\s]+@/g, "//[hidden]@");
+  for (const [rx] of SECRET_PATTERNS) out = out.replace(new RegExp(rx.source, "g"), "[hidden]");
+  return out;
+}
 const BIG_FILE = 1024 * 1024;
 const BIG_PACKAGE = 10 * 1024 * 1024;
 
@@ -65,7 +72,7 @@ function parseArgs(argv) {
 }
 
 function packList(dir) {
-  const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+  const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--logs-max=0"], {
     cwd: dir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -82,6 +89,7 @@ function normalizeRepo(r) {
   return url
     .trim()
     .replace(/^git\+/, "")
+    .replace(/^git:\/\//, "https://")
     .replace(/^git@github\.com:/, "https://github.com/")
     .replace(/^github:/, "https://github.com/")
     .replace(/^ssh:\/\/git@github\.com\//, "https://github.com/")
@@ -111,6 +119,19 @@ function gitTracked(dir, path) {
   } catch {
     return false;
   }
+}
+
+// Files that satisfy an entry. Node resolves main like require (extensions, folder index); exports and
+// bin must name the exact file; types also takes .d.ts forms.
+function candidates(p, field) {
+  const base = p.replace(/\/+$/, "").replace(/^\.$/, "");
+  const dirIndex = (ext) => (base ? `${base}/index${ext}` : `index${ext}`);
+  if (field === "main") {
+    const exts = [".js", ".json", ".node", ".cjs", ".mjs"];
+    return [base, ...exts.map((e) => base + e), ...exts.map(dirIndex)].filter(Boolean);
+  }
+  if (field === "types") return [base, `${base}.d.ts`, dirIndex(".d.ts")].filter(Boolean);
+  return [base];
 }
 
 // Paths package.json says users will load: main, bin, exports, types.
@@ -202,13 +223,13 @@ export function check(dirArg, { tsc = true } = {}) {
 
   // 5. install scripts run on every user's machine
   for (const s of INSTALL_SCRIPTS)
-    if (pkg.scripts && pkg.scripts[s]) add("WARN", "install-script", `scripts.${s} runs on every install: "${pkg.scripts[s]}"`);
+    if (pkg.scripts && pkg.scripts[s]) add("WARN", "install-script", `scripts.${s} runs on every install: "${redact(pkg.scripts[s])}"`);
 
   // 6. entry points exist in the tarball
   const packed = new Set(files);
   const entries = entryPoints(pkg);
   for (const [p, field] of entries) {
-    const hit = packed.has(p) || packed.has(`${p}.js`) || packed.has(`${p}/index.js`);
+    const hit = candidates(p, field).some((c) => packed.has(c));
     if (!hit) add("FAIL", "entry", `${field} points at ${p}, which is not in the tarball`);
   }
   if (!pkg.main && !pkg.exports && !pkg.bin && !packed.has("index.js"))
@@ -219,7 +240,7 @@ export function check(dirArg, { tsc = true } = {}) {
   if (!repo) add("WARN", "repository", "no repository field: npm will not link the source");
   else {
     const origin = normalizeRepo(gitOrigin(dir));
-    if (origin && origin !== repo) add("WARN", "repository", `repository ${repo} differs from git origin ${origin}`);
+    if (origin && origin !== repo) add("WARN", "repository", `repository ${redact(repo)} differs from git origin ${redact(origin)}`);
   }
 
   // 8. versions in sibling manifests agree
@@ -247,7 +268,7 @@ export function check(dirArg, { tsc = true } = {}) {
     if (!bin) add("WARN", "tsc", "tsconfig.json found but no tsc to run (install typescript or pass --no-tsc)");
     else {
       try {
-        execFileSync(bin, ["--noEmit", "-p", dir], { cwd: dir, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
+        execFileSync(bin, ["--noEmit", "--composite", "false", "--incremental", "false", "-p", dir], { cwd: dir, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8" });
         add("PASS", "tsc", "tsc --noEmit: no errors");
       } catch (e) {
         const first = (e.stdout || "").toString().split("\n").find((l) => l.includes("error")) || "errors";
