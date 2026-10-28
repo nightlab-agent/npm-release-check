@@ -122,8 +122,8 @@ test("--json prints counts", () => {
 });
 
 test("a template .env file passes; a real one in a folder fails", () => {
-  const files = { "index.js": "1\n", ".env.example": "A=\n", "cfg/.env.local": "A=1\n" };
-  const r = check(pkgDir("envex", { ...good, files: ["index.js", ".env.example", "cfg/.env.local"] }, files));
+  const files = { "index.js": "1\n", ".env.example": "A=\n", ".env.local.sample": "A=\n", "cfg/.env.local": "A=1\n" };
+  const r = check(pkgDir("envex", { ...good, files: ["index.js", ".env.example", ".env.local.sample", "cfg/.env.local"] }, files));
   const hits = r.results.filter((x) => x.id === "private-file").map((x) => x.message);
   assert.equal(hits.length, 1);
   assert.match(hits[0], /cfg\/\.env\.local/);
@@ -142,13 +142,15 @@ test("main resolves as Node does; exports, bin and types do not take a .js guess
 });
 
 test("a token in a script or a git URL is hidden in the message", () => {
-  const token = "ghp_" + "Q".repeat(36);
+  const token = "ghp_" + "q7".repeat(18);
   const dir = pkgDir("leak", { ...good, scripts: { postinstall: `curl -H "token ${token}" x` } }, { "index.js": "1\n" });
   execFileSync("git", ["init", "-q", dir]);
   execFileSync("git", ["-C", dir, "remote", "add", "origin", `https://x:${token}@github.com/example/other`]);
-  const out = JSON.stringify(check(dir));
-  assert.ok(!out.includes(token));
-  assert.ok(out.includes("[hidden]"));
+  const r = check(dir);
+  for (const id of ["install-script", "repository"]) {
+    const m = r.results.find((x) => x.id === id).message;
+    assert.ok(!m.includes(token) && m.includes("[hidden]"), id);
+  }
 });
 
 test("git:// and https forms of one repository agree", () => {
@@ -156,4 +158,28 @@ test("git:// and https forms of one repository agree", () => {
   execFileSync("git", ["init", "-q", dir]);
   execFileSync("git", ["-C", dir, "remote", "add", "origin", "https://github.com/example/good"]);
   assert.deepEqual(ids(check(dir), "WARN"), []);
+});
+
+test("a type error that quotes a token is hidden; a .envrc fails", () => {
+  const token = "ghp_" + "z9".repeat(18);
+  const dir = pkgDir("tsctok", { ...good, files: ["index.js", ".envrc"] }, {
+    "index.js": "1\n",
+    ".envrc": "export A=1\n",
+    "tsconfig.json": '{"include":["src/a.ts"]}',
+    "src/a.ts": `export const x: "a" = "${token}";\n`,
+  });
+  const r = check(dir, { tsc: false });
+  assert.ok(r.results.some((x) => x.id === "private-file" && x.message.includes(".envrc")));
+  const tsc = check(dir).results.find((x) => x.id === "tsc"); // absent when no tsc is installed
+  if (tsc) assert.ok(!tsc.message.includes(token));
+});
+
+test("main does not take .mjs (require never does); a plain URL user is not hidden", () => {
+  const r = check(pkgDir("mmjs", { ...good, main: "index" }, { "index.mjs": "1\n" }));
+  assert.ok(ids(r, "FAIL").includes("entry"));
+  const dir = pkgDir("urluser", good, { "index.js": "1\n" });
+  execFileSync("git", ["init", "-q", dir]);
+  execFileSync("git", ["-C", dir, "remote", "add", "origin", "https://bob@gitlab.com/example/other"]);
+  const m = check(dir).results.find((x) => x.id === "repository").message;
+  assert.match(m, /\/\/bob@gitlab\.com/);
 });

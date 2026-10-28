@@ -22,7 +22,8 @@ FAIL  secret: index.js:1: has the shape of: npm token
 ---- 1 FAIL, 0 WARN
 ```
 
-A secret is reported by file and line, never by value; token shapes and URL user info in a quoted script or git URL are shown as `[hidden]`. Exit code 0 means no
+A secret is reported by file and line, never by value. Any message that quotes outside text (a script, a git URL, a type error) shows token
+shapes and URL passwords as `[hidden]`. Exit code 0 means no
 FAIL (WARNs allowed), 1 means at least one FAIL, 2 means it could not run and
 says why. `--json` prints the same results for a script; `--no-tsc` skips the
 type check.
@@ -32,15 +33,15 @@ type check.
 | Check | Result when it trips |
 |---|---|
 | The file list from `npm pack --dry-run --json --ignore-scripts` | FAIL if pack fails |
-| `.env` files (not `.env.example`, `.sample`, `.template`, `.dist`, `.defaults`), `.npmrc`, key and certificate files, SSH keys, `.git/`, credentials files, `.aws`/`.ssh`/`.docker` folders in the tarball | FAIL |
+| `.env` files (not ones ending `.example`, `.sample`, `.template`, `.dist`, `.defaults`), `.envrc`, `.npmrc`, key and certificate files, SSH keys, `.git/`, credentials files, `.aws`/`.ssh`/`.docker` folders in the tarball | FAIL |
 | Token shapes in packed text files: npm, GitHub, AWS key id, private key block, Anthropic, OpenAI-style, Slack, Google | FAIL, file and line |
-| `main`, `bin`, `exports`, `types` point at files that are packed (`main` resolves as Node does: extensions, folder index; `exports` and `bin` must name the exact file; `types` also takes `.d.ts` forms) | FAIL |
+| `main`, `bin`, `exports`, `types` point at files that are packed (`main` resolves as `require` does: `.js`, `.json`, `.node`, folder index; `exports` and `bin` must name the exact file; `types` also takes `.d.ts` forms) | FAIL |
 | `preinstall`, `install`, `postinstall` scripts | WARN |
 | `repository` missing, or different from git's `origin` | WARN |
 | Version in `.claude-plugin/plugin.json`, `gemini-extension.json`, `jsr.json`, `deno.json` differs from package.json | FAIL |
 | `CHANGELOG.md` does not mention the version | WARN |
 | `.npmrc` committed to git | WARN |
-| `tsc --noEmit` when there is a `tsconfig.json` | FAIL on an error |
+| `tsc --noEmit` when there is a `tsconfig.json` (a solution config with only `references` checks nothing yet) | FAIL on an error |
 | `"private": true`, no name, a version that is not semver | FAIL |
 | A file over 1 MB (not scanned), a package over 10 MB | WARN |
 
@@ -69,7 +70,7 @@ files npm would pack. It runs `npm pack --dry-run` (with install scripts off),
 `git remote get-url origin`, `git ls-files .npmrc`, and, when there is a
 `tsconfig.json` and no `--no-tsc`, `tsc --noEmit` with build info off (the
 package's own `node_modules/.bin/tsc`, else `tsc` on the PATH). It writes no
-file (npm's debug log is off too) and sends nothing off the machine.
+file (npm's debug log and update check are off too) and sends nothing off the machine.
 
 ## Why it exists
 

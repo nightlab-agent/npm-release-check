@@ -13,7 +13,8 @@ const VERSION = "0.1.0";
 // Files that should never be in a tarball. Matched against each packed path.
 /** @type {[RegExp, string][]} */
 const PRIVATE_FILES = [
-  [/(^|\/)\.env(\.(?!(example|sample|template|dist|defaults)$)[^/]*)?$/i, ".env file"],
+  [/(^|\/)\.env(?!(\.[^/]*)?\.(example|sample|template|dist|defaults)$)(\.[^/]*)?$/i, ".env file"],
+  [/(^|\/)\.envrc$/i, ".envrc (direnv, often exports secrets)"],
   [/(^|\/)\.npmrc$/i, ".npmrc (may hold a registry token)"],
   [/\.(pem|key|p12|pfx|keystore|jks)$/i, "key or certificate file"],
   [/(^|\/)id_(rsa|dsa|ecdsa|ed25519)$/i, "SSH private key"],
@@ -38,9 +39,9 @@ const SECRET_PATTERNS = [
 
 const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"];
 
-// Text from package.json or git that goes into a message: token shapes and URL user info are hidden.
+// Every message passes through here: token shapes and a URL password are hidden (a plain user like git@ stays).
 function redact(text) {
-  let out = String(text).replace(/\/\/[^/@\s]+@/g, "//[hidden]@");
+  let out = String(text).replace(/\/\/[^/@\s:]+:[^/@\s]+@/g, "//[hidden]@");
   for (const [rx] of SECRET_PATTERNS) out = out.replace(new RegExp(rx.source, "g"), "[hidden]");
   return out;
 }
@@ -72,7 +73,7 @@ function parseArgs(argv) {
 }
 
 function packList(dir) {
-  const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--logs-max=0"], {
+  const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--logs-max=0", "--no-update-notifier"], {
     cwd: dir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -127,7 +128,7 @@ function candidates(p, field) {
   const base = p.replace(/\/+$/, "").replace(/^\.$/, "");
   const dirIndex = (ext) => (base ? `${base}/index${ext}` : `index${ext}`);
   if (field === "main") {
-    const exts = [".js", ".json", ".node", ".cjs", ".mjs"];
+    const exts = [".js", ".json", ".node"];
     return [base, ...exts.map((e) => base + e), ...exts.map(dirIndex)].filter(Boolean);
   }
   if (field === "types") return [base, `${base}.d.ts`, dirIndex(".d.ts")].filter(Boolean);
@@ -167,7 +168,7 @@ export function check(dirArg, { tsc = true } = {}) {
   const dir = resolve(dirArg);
   /** @type {{status: string, id: string, message: string}[]} */
   const results = [];
-  const add = (status, id, message) => results.push({ status, id, message });
+  const add = (status, id, message) => results.push({ status, id, message: redact(message) });
 
   const pkgPath = join(dir, "package.json");
   if (!existsSync(pkgPath)) throw new Error(`no package.json in ${dir}`);
@@ -223,7 +224,7 @@ export function check(dirArg, { tsc = true } = {}) {
 
   // 5. install scripts run on every user's machine
   for (const s of INSTALL_SCRIPTS)
-    if (pkg.scripts && pkg.scripts[s]) add("WARN", "install-script", `scripts.${s} runs on every install: "${redact(pkg.scripts[s])}"`);
+    if (pkg.scripts && pkg.scripts[s]) add("WARN", "install-script", `scripts.${s} runs on every install: "${pkg.scripts[s]}"`);
 
   // 6. entry points exist in the tarball
   const packed = new Set(files);
@@ -240,7 +241,7 @@ export function check(dirArg, { tsc = true } = {}) {
   if (!repo) add("WARN", "repository", "no repository field: npm will not link the source");
   else {
     const origin = normalizeRepo(gitOrigin(dir));
-    if (origin && origin !== repo) add("WARN", "repository", `repository ${redact(repo)} differs from git origin ${redact(origin)}`);
+    if (origin && origin !== repo) add("WARN", "repository", `repository ${repo} differs from git origin ${origin}`);
   }
 
   // 8. versions in sibling manifests agree
