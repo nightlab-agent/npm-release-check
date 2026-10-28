@@ -16,7 +16,7 @@ v=$(node -p 'require("./package.json").version')
 grep -q "$v" CHANGELOG.md || { echo "FAIL CHANGELOG lacks $v"; exit 1; }
 m=tests/.work/mut
 rm -rf "$m" && mkdir -p "$m/bin" "$m/tests"
-sed 's/if (rx.test(line)) add("FAIL", "secret"/if (false) add("FAIL", "secret"/' bin/npm-release-check.mjs > "$m/bin/npm-release-check.mjs"
+sed 's/if (rx.test(line) \&\& !placeholder(line, rx)) add("FAIL", "secret"/if (false) add("FAIL", "secret"/' bin/npm-release-check.mjs > "$m/bin/npm-release-check.mjs"
 cmp -s bin/npm-release-check.mjs "$m/bin/npm-release-check.mjs" && { echo "FAIL mutation did not apply"; exit 1; }
 cp tests/check.test.mjs "$m/tests/"
 if node --test "$m/tests/check.test.mjs" >/dev/null 2>&1; then echo "FAIL a disabled secret check still passes the tests"; exit 1; fi

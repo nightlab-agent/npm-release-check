@@ -29,12 +29,14 @@ const SECRET_PATTERNS = [
   [/npm_[A-Za-z0-9]{36}/, "npm token"],
   [/gh[pousr]_[A-Za-z0-9]{36}/, "GitHub token"],
   [/github_pat_[A-Za-z0-9_]{60,}/, "GitHub fine-grained token"],
-  [/AKIA[0-9A-Z]{16}/, "AWS access key id"],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "private key block"],
+  // Not inside a longer base64 run, and not AWS's documented example key (…EXAMPLE).
+  [/(?<![A-Za-z0-9+/])AKIA(?![0-9A-Z]{9}EXAMPLE)[0-9A-Z]{16}(?![A-Za-z0-9+/])/, "AWS access key id"],
+  // The header alone is code that writes a PEM; key data must follow it (a newline, real or escaped, then base64).
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\r?\n|(?:\\r)?\\n)[A-Za-z0-9+/]{40}/, "private key block"],
   [/sk-ant-[A-Za-z0-9_-]{20,}/, "Anthropic API key"],
   [/sk-(proj-)?[A-Za-z0-9]{32,}/, "OpenAI-style API key"],
   [/xox[abprs]-[A-Za-z0-9-]{10,}/, "Slack token"],
-  [/AIza[0-9A-Za-z_-]{35}/, "Google API key"],
+  [/(?<![A-Za-z0-9+/])AIza[0-9A-Za-z_-]{35}(?![A-Za-z0-9_-])/, "Google API key"],
 ];
 
 const INSTALL_SCRIPTS = ["preinstall", "install", "postinstall"];
@@ -45,8 +47,36 @@ function redact(text) {
   for (const [rx] of SECRET_PATTERNS) out = out.replace(new RegExp(rx.source, "g"), "[hidden]");
   return out;
 }
-const BIG_FILE = 1024 * 1024;
+const BIG_FILE = 50 * 1024 * 1024;
+
+// exports conditions Node, bundlers and runtimes read without being asked. Any other key (source, code,
+// dev-source) is a custom condition only a tool that sets it reads, so a missing file there is INFO.
+const KNOWN_CONDITIONS = new Set(["node", "import", "require", "default", "types", "module-sync", "browser", "module",
+  "deno", "bun", "worker", "workerd", "edge-light", "react-native", "react-server", "development", "production", "electron"]);
+
+// npm 10 runs a package's prepare script during `npm pack --dry-run` even with --ignore-scripts.
+// Handing npm a shell that does nothing stops it. Windows has no such shell; there the check refuses to pack.
+function noopShell() {
+  if (process.platform === "win32") return "";
+  return ["/usr/bin/true", "/bin/true"].find((p) => existsSync(p)) || "";
+}
 const BIG_PACKAGE = 10 * 1024 * 1024;
+
+// A .pem that holds only a public key or a certificate is meant to ship.
+function publicPem(path) {
+  if (!/\.pem$/i.test(path)) return false;
+  try {
+    return !readFileSync(path, "utf8").includes("PRIVATE KEY");
+  } catch {
+    return false;
+  }
+}
+
+// ghp_xxxx... in a README is a placeholder: every match on the line ends in 16 characters of at most 3 kinds.
+function placeholder(line, rx) {
+  const all = line.match(new RegExp(rx.source, "g")) || [];
+  return all.length > 0 && all.every((m) => new Set(m.slice(-16)).size <= 3);
+}
 
 function usage() {
   return `npm-release-check ${VERSION}
@@ -72,11 +102,14 @@ function parseArgs(argv) {
   return opts;
 }
 
-function packList(dir) {
-  const out = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts", "--logs-max=0", "--no-update-notifier"], {
+function packList(dir, shell) {
+  const args = ["pack", "--dry-run", "--json", "--ignore-scripts", "--logs-max=0", "--no-update-notifier"];
+  if (shell) args.push(`--script-shell=${shell}`);
+  const out = execFileSync("npm", args, {
     cwd: dir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    maxBuffer: 512 * 1024 * 1024, // a package of a few thousand files prints more than the 1 MB default
   });
   const parsed = JSON.parse(out);
   const info = Array.isArray(parsed) ? parsed[0] : parsed;
@@ -186,11 +219,15 @@ export function check(dirArg, { tsc = true } = {}) {
   if (pkg.private === true) add("FAIL", "private", '"private": true: npm will refuse to release it');
 
   // 2. what the tarball holds
+  const shell = noopShell();
+  if (pkg.scripts && pkg.scripts.prepare && !shell)
+    throw new Error("scripts.prepare is set and npm pack would run it (npm 10 ignores --ignore-scripts for prepare); nothing was run");
   let info;
   try {
-    info = packList(dir);
+    info = packList(dir, shell);
   } catch (e) {
-    const msg = (e.stderr || e.message || "").toString().split("\n").find((l) => l.trim()) || "failed";
+    const lines = (e.stderr || "").toString().split("\n").filter((l) => l.trim());
+    const msg = lines.find((l) => /^npm (error|ERR!)/.test(l)) || (e.code ? `${e.code}: ${e.message}` : lines[0] || e.message || "failed");
     add("FAIL", "pack", `npm pack --dry-run failed: ${msg.trim()}`);
     return { dir, name: pkg.name, version: pkg.version, results };
   }
@@ -199,7 +236,7 @@ export function check(dirArg, { tsc = true } = {}) {
 
   // 3. private files
   for (const f of files)
-    for (const [rx, what] of PRIVATE_FILES) if (rx.test(f)) add("FAIL", "private-file", `${f}: ${what} in the tarball`);
+    for (const [rx, what] of PRIVATE_FILES) if (rx.test(f) && !publicPem(join(dir, f))) add("FAIL", "private-file", `${f}: ${what} in the tarball`);
 
   // 4. secrets inside packed text files
   for (const f of info.files) {
@@ -215,9 +252,11 @@ export function check(dirArg, { tsc = true } = {}) {
     }
     if (text.includes("\u0000")) continue; // binary
     const lines = text.split("\n");
-    lines.forEach((line, i) => {
+    lines.forEach((own, i) => {
+      // A PEM header's key data sits on the next line, so that line is read with it.
+      const line = own.includes("PRIVATE KEY-----") ? `${own}\n${lines[i + 1] ?? ""}` : own;
       for (const [rx, what] of SECRET_PATTERNS)
-        if (rx.test(line)) add("FAIL", "secret", `${f.path}:${i + 1}: has the shape of: ${what}`);
+        if (rx.test(line) && !placeholder(line, rx)) add("FAIL", "secret", `${f.path}:${i + 1}: has the shape of: ${what}`);
     });
   }
   if ((info.unpackedSize || 0) > BIG_PACKAGE) add("WARN", "size", `unpacked size ${info.unpackedSize} bytes is over 10 MB`);
@@ -231,7 +270,10 @@ export function check(dirArg, { tsc = true } = {}) {
   const entries = entryPoints(pkg);
   for (const [p, field] of entries) {
     const hit = candidates(p, field).some((c) => packed.has(c));
-    if (!hit) add("FAIL", "entry", `${field} points at ${p}, which is not in the tarball`);
+    const custom = [...field.matchAll(/\[([^\]]*)\]/g)].map((m) => m[1]).find((k) => !k.startsWith(".") && !KNOWN_CONDITIONS.has(k) && !k.startsWith("types@"));
+    if (hit) continue;
+    if (custom) add("INFO", "entry", `${field} points at ${p}, which is not in the tarball; "${custom}" is a custom condition, read only by tools that set it`);
+    else add("FAIL", "entry", `${field} points at ${p}, which is not in the tarball`);
   }
   if (!pkg.main && !pkg.exports && !pkg.bin && !packed.has("index.js"))
     add("INFO", "entry", "no main, exports or bin: fine for a files-only package, nothing to import or run otherwise");

@@ -2,7 +2,7 @@
 // Token-shaped strings are assembled at run time so this repo never holds one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -27,6 +27,8 @@ function pkgDir(name, pkg, files = {}) {
 }
 
 const ids = (r, status) => r.results.filter((x) => x.status === status).map((x) => x.id);
+// A token-shaped string with varied characters (a run of one letter reads as a placeholder).
+const mix = (n, at = 0) => Array.from({ length: n }, (_, i) => "aZ3kQ9mX7pR2"[(i + at) % 12]).join("");
 const good = { main: "index.js", repository: "https://github.com/example/good" };
 
 test("a clean package passes", () => {
@@ -37,7 +39,7 @@ test("a clean package passes", () => {
 });
 
 test("a token inside a packed file fails, and the value is not printed", () => {
-  const token = "npm_" + "A".repeat(18) + "b".repeat(18);
+  const token = "npm_" + mix(36);
   const r = check(pkgDir("tok", good, { "index.js": `const t = "${token}";\n` }));
   const hit = r.results.find((x) => x.id === "secret");
   assert.ok(hit, "secret found");
@@ -46,7 +48,7 @@ test("a token inside a packed file fails, and the value is not printed", () => {
 });
 
 test("a private key block fails", () => {
-  const block = "-----BEGIN " + "RSA PRIVATE KEY-----\nabc\n";
+  const block = "-----BEGIN " + "RSA PRIVATE KEY-----\n" + "MIIEow".repeat(8) + "\n";
   const r = check(pkgDir("pem", { ...good, files: ["index.js", "notes.txt"] }, { "index.js": "1\n", "notes.txt": block }));
   assert.ok(ids(r, "FAIL").includes("secret"));
 });
@@ -142,7 +144,7 @@ test("main resolves as Node does; exports, bin and types do not take a .js guess
 });
 
 test("a token in a script or a git URL is hidden in the message", () => {
-  const token = "ghp_" + "q7".repeat(18);
+  const token = "ghp_" + mix(36);
   const dir = pkgDir("leak", { ...good, scripts: { postinstall: `curl -H "token ${token}" x` } }, { "index.js": "1\n" });
   execFileSync("git", ["init", "-q", dir]);
   execFileSync("git", ["-C", dir, "remote", "add", "origin", `https://x:${token}@github.com/example/other`]);
@@ -161,7 +163,7 @@ test("git:// and https forms of one repository agree", () => {
 });
 
 test("a type error that quotes a token is hidden; a .envrc fails", () => {
-  const token = "ghp_" + "z9".repeat(18);
+  const token = "ghp_" + mix(36, 5);
   const dir = pkgDir("tsctok", { ...good, files: ["index.js", ".envrc"] }, {
     "index.js": "1\n",
     ".envrc": "export A=1\n",
@@ -182,4 +184,65 @@ test("main does not take .mjs (require never does); a plain URL user is not hidd
   execFileSync("git", ["-C", dir, "remote", "add", "origin", "https://bob@gitlab.com/example/other"]);
   const m = check(dir).results.find((x) => x.id === "repository").message;
   assert.match(m, /\/\/bob@gitlab\.com/);
+});
+
+test("npm pack does not run the prepare script", () => {
+  const dir = pkgDir("prep", { ...good, scripts: { prepare: "echo ran > ran.txt" } }, { "index.js": "1\n" });
+  const r = check(dir);
+  assert.ok(!existsSync(join(dir, "ran.txt")), "prepare ran");
+  assert.deepEqual(ids(r, "FAIL"), []);
+});
+
+test("a PEM header in code passes; key data after it, escaped or on the next line, fails", () => {
+  const head = "-----BEGIN " + "PRIVATE KEY-----";
+  const body = "MIIEvQ".repeat(8);
+  const code = check(pkgDir("pemcode", good, { "index.js": `return ('${head}\\n' +\n  key);\n` }));
+  assert.deepEqual(ids(code, "FAIL"), []);
+  const esc = check(pkgDir("pemesc", good, { "index.js": `const k = "${head}\\n${body}";\n` }));
+  assert.ok(ids(esc, "FAIL").includes("secret"));
+  const crlf = check(pkgDir("pemcrlf", { ...good, files: ["index.js", "k.txt"] }, { "index.js": "1\n", "k.txt": `${head}\r\n${body}\r\n` }));
+  assert.ok(ids(crlf, "FAIL").includes("secret"));
+});
+
+test("a custom exports condition pointing at source is INFO; import pointing nowhere still fails", () => {
+  const exp = { ".": { source: "./src/index.ts", import: "./index.js" } };
+  const r = check(pkgDir("custom", { ...good, exports: exp }, { "index.js": "1\n" }));
+  assert.deepEqual(ids(r, "FAIL"), []);
+  assert.ok(r.results.some((x) => x.status === "INFO" && /"source" is a custom condition/.test(x.message)));
+  const bad = check(pkgDir("custombad", { ...good, exports: { ".": { source: "./src/index.ts", import: "./dist/index.js" } } }, { "index.js": "1\n" }));
+  assert.ok(ids(bad, "FAIL").includes("entry"));
+});
+
+test("a file over 1 MB is still scanned for tokens", () => {
+  const token = "npm_" + mix(36, 3);
+  const big = "// pad\n".repeat(200000) + `const t = "${token}";\n`;
+  const r = check(pkgDir("bigtok", { ...good, files: ["index.js", "big.js"] }, { "index.js": "1\n", "big.js": big }));
+  assert.ok(ids(r, "FAIL").includes("secret"));
+  assert.ok(!ids(r, "WARN").includes("big-file"));
+});
+
+test("an AWS key shape inside a base64 run, or AWS's example key, passes; a standalone one fails", () => {
+  const key = "AKIA" + "Q7RZ" + "2M4X" + "J9KP" + "W3TB";
+  const blob = check(pkgDir("awsblob", good, { "index.js": `var R = "data:;base64,x9${key}Lq==";\n` }));
+  assert.deepEqual(ids(blob, "FAIL"), []);
+  const example = check(pkgDir("awsex", good, { "index.js": `// ${"AKIA" + "IOSFODNN7" + "EXAMPLE"}\n` }));
+  assert.deepEqual(ids(example, "FAIL"), []);
+  const real = check(pkgDir("awsreal", good, { "index.js": `const id = "${key}";\n` }));
+  assert.ok(ids(real, "FAIL").includes("secret"));
+});
+
+test("a package whose file list is over 1 MB of JSON still packs", () => {
+  const files = { "index.js": "1\n" };
+  for (let i = 0; i < 4000; i++) files[`lib/${"f".repeat(200)}${i}.js`] = "1\n";
+  const r = check(pkgDir("many", good, files));
+  assert.deepEqual(ids(r, "FAIL"), []);
+});
+
+test("a placeholder token passes; a .pem with only a public key passes, one with a private key fails", () => {
+  const ph = check(pkgDir("placeholder", good, { "index.js": `// export GH=${"ghp_" + "x".repeat(36)}\n` }));
+  assert.deepEqual(ids(ph, "FAIL"), []);
+  const pub = check(pkgDir("pubpem", { ...good, files: ["index.js", "k.pem"] }, { "index.js": "1\n", "k.pem": "-----BEGIN PUBLIC KEY-----\nabc\n" }));
+  assert.deepEqual(ids(pub, "FAIL"), []);
+  const priv = check(pkgDir("privpem", { ...good, files: ["index.js", "k.pem"] }, { "index.js": "1\n", "k.pem": "-----BEGIN " + "PRIVATE KEY-----\nabc\n" }));
+  assert.ok(ids(priv, "FAIL").includes("private-file"));
 });
