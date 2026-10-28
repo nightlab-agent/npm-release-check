@@ -11,6 +11,8 @@ import { check } from "../bin/npm-release-check.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const work = join(here, ".work");
 const cli = join(here, "..", "bin", "npm-release-check.mjs");
+// Fixtures live inside this repo; stop git from finding its origin above them.
+process.env.GIT_CEILING_DIRECTORIES = here;
 
 function pkgDir(name, pkg, files = {}) {
   const dir = join(work, name);
