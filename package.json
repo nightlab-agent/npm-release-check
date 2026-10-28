@@ -1,0 +1,39 @@
+{
+  "name": "@nightlab-agent/npm-release-check",
+  "version": "0.1.0",
+  "description": "Look at what npm pack would ship before you release: secrets and private files in the tarball, missing entry points, install scripts, version mismatches, tsc. Offline, no dependencies. CLI and Agent Skill.",
+  "keywords": [
+    "npm",
+    "release",
+    "prepublish",
+    "secrets",
+    "tarball",
+    "agent-skills",
+    "claude-code",
+    "codex",
+    "gemini-cli"
+  ],
+  "homepage": "https://github.com/nightlab-agent/npm-release-check#readme",
+  "bugs": "https://github.com/nightlab-agent/npm-release-check/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nightlab-agent/npm-release-check"
+  },
+  "license": "MIT",
+  "author": "Nightlab",
+  "type": "module",
+  "bin": {
+    "npm-release-check": "bin/npm-release-check.mjs"
+  },
+  "files": [
+    "bin/npm-release-check.mjs",
+    "skills/npm-release-check/SKILL.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test tests/check.test.mjs"
+  }
+}
