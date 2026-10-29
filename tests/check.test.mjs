@@ -235,7 +235,10 @@ test("a package whose file list is over 1 MB of JSON still packs", () => {
   const files = { "index.js": "1\n" };
   for (let i = 0; i < 4000; i++) files[`lib/${"f".repeat(200)}${i}.js`] = "1\n";
   const r = check(pkgDir("many", good, files));
-  assert.deepEqual(ids(r, "FAIL"), []);
+  // Seen to fail once with "entry" under load in the release service (2026-10-28), not reproduced in six loaded runs:
+  // on a failure, say how many files pack listed and whether index.js was among them, so the next one is diagnosable.
+  const packed = r.results.find((x) => x.id === "pack");
+  assert.deepEqual(ids(r, "FAIL"), [], `pack said: ${packed ? packed.message : "no pack row"}; entry rows: ${JSON.stringify(r.results.filter((x) => x.id === "entry"))}`);
 });
 
 test("a placeholder token passes; a .pem with only a public key passes, one with a private key fails", () => {
