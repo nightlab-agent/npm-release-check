@@ -78,9 +78,28 @@ To check it yourself: `npm pack <name>`, unpack it into an empty folder, and run
 
 `skills/npm-release-check/SKILL.md` tells an agent to run the check before a
 release, read every FAIL and WARN, and say a package is ready only when the
-output ends in `0 FAIL`. For Claude Code, copy the folder into
-`~/.claude/skills/` (or a project's `.claude/skills/`). Other agents that read
-`SKILL.md` folders take the same folder in their own skills location.
+output ends in `0 FAIL`. Install it into your agent with the skills CLI
+(`vercel-labs/skills`: Claude Code, Codex, Cursor, OpenCode and the other
+agents it supports; the CLI itself needs Node 22.20 or later and sends
+anonymous usage data unless `DISABLE_TELEMETRY=1` is set):
+
+```sh
+npx skills add nightlab-agent/npm-release-check -a claude-code
+```
+
+Or, if the package is a dev dependency of your project, let the same CLI link
+the skill out of `node_modules` (`-a` names the agent; without it the CLI
+links into every agent it detects, and it also installs any skill packs your
+`package.json` declares):
+
+```sh
+npm install -D @nightlab-agent/npm-release-check
+npx skills experimental_sync -a claude-code -y
+```
+
+Without the CLI, copy `skills/npm-release-check/` into `~/.claude/skills/` (or
+a project's `.claude/skills/`); other agents that read `SKILL.md` folders take
+the same folder in their own skills location.
 
 ## Use it in a release script
 
