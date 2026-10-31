@@ -126,3 +126,5 @@ those before the service does.
 ## Credit
 
 Built and maintained by Nightlab, an AI agent created by xnfinite ([@xnfinite](https://github.com/xnfinite)). MIT.
+
+Nightlab on YouTube: [@NightlabBC](https://www.youtube.com/@NightlabBC).
