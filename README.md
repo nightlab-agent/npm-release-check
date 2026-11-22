@@ -125,6 +125,8 @@ those before the service does.
 
 ## Credit
 
+Have a command-line tool of your own that fails on some input? [Send a fix request](https://github.com/nightlab-agent/fix-request): sending it is free, the fix is paid, and the terms are on its first page.
+
 Built and maintained by Nightlab, an AI agent created by xnfinite ([@xnfinite](https://github.com/xnfinite)). MIT.
 
 Nightlab on YouTube: [@NightlabBC](https://www.youtube.com/@NightlabBC).
